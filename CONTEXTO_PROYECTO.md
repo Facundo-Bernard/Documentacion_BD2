@@ -1,4 +1,8 @@
+> **Actualización local:** El cierre versión 3 prepara un relato legible en `simulaciones.jugadas_historicas` de MongoDB (`evento_id`, `minuto`, `equipo_id`, `texto`). Neo4j conserva eventos, relaciones y agregados; Influx atiende las series temporales en vivo. El código local configura una retención de 1 hora solo al crear una base nueva: la base existente no fue migrada. Falta probar el cierre completo, migrar históricos y reiniciar la API para activar los cambios. Si el archivo falla, los datos pueden vencer antes de recuperarse. Las secciones históricas de abajo describen estados anteriores y deben leerse con esta actualización.
+
 # Contexto del proyecto: Prode Fixture 2030
+
+> Nota: este documento describe el commit publicado `d51e899`. Los cambios locales posteriores de eventos por jugador y su verificación pendiente se detallan en la documentación interactiva.
 
 Actualizado el 18/11/2026. Este documento describe el estado del código del TPO y distingue las propuestas que todavía faltan. El proyecto principal es [Grupo16_BD2_repo](https://github.com/tomaszeppo/Grupo16_BD2_repo); esta documentación tiene su propia [vista de arquitectura](index.html). El TPO vive en `TPO/` y es independiente de los hitos anteriores. La implementación descrita está publicada en el commit [`d51e899`](https://github.com/tomaszeppo/Grupo16_BD2_repo/commit/d51e899) del repositorio principal.
 
@@ -80,3 +84,5 @@ Compose levanta MongoDB con tres nodos, Neo4j, Cassandra, InfluxDB y FastAPI. In
 ## Antecedentes y preferencias
 
 El Hito 12 midió 50.000 inserciones directas en Cassandra; esa medición no prueba la API del TPO. Su Data Mart en SQLite es una proyección de demostración con datos sintéticos. El usuario prefiere código simple y legible, bajo consumo de recursos, documentación directa y evitar pruebas de carga innecesarias; distinguir implementación, propuesta y evidencia.
+
+> Revisión local: 190 pruebas unitarias aprobadas con el entorno de métricas aislado. Continúan pendientes la prueba completa de una simulación nueva con retención y la migración de la base de Influx existente y los históricos anteriores.
