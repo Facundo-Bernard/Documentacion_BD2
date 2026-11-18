@@ -1,88 +1,82 @@
 # Contexto del proyecto: Prode Fixture 2030
 
-Documento para continuar el trabajo en otro chat. Actualizado el 17/11/2026.
+Actualizado el 18/11/2026. Este documento describe el estado del código del TPO y distingue las propuestas que todavía faltan. El proyecto principal es [Grupo16_BD2_repo](https://github.com/tomaszeppo/Grupo16_BD2_repo); esta documentación tiene su propia [vista de arquitectura](index.html). El TPO vive en `TPO/` y es independiente de los hitos anteriores. La implementación descrita está publicada en el commit [`d51e899`](https://github.com/tomaszeppo/Grupo16_BD2_repo/commit/d51e899) del repositorio principal.
 
-## Repositorios
+## Objetivo y recorrido
 
-- Proyecto principal: https://github.com/tomaszeppo/Grupo16_BD2_repo. Carpeta local: `C:\Users\lparlavecchio\Documents\proyectos\BASES DE DATOS 2`. Último commit incorporado en esta conversación: `f750dc8` en `main`.
-- Documentación visual: https://github.com/Facundo-Bernard/Documentacion_BD2. El archivo `index.html` describe la arquitectura propuesta y se despliega como sitio estático en Vercel. Esta carpeta contiene ese repositorio; su último commit previo a este contexto es `964c829`.
-- El repositorio principal avanzó durante la conversación. Antes de desarrollar, revisar su estado y los últimos cambios; el commit remoto `28b1bcf` indica una redistribución de responsabilidades que retira IRIS. Las descripciones antiguas pueden haber quedado desactualizadas.
+El usuario crea o elige un usuario de laboratorio, consulta fixture y prodes, pronostica y sigue un partido desde **En vivo**. En el detalle ve el marcador y minuto, estadísticas comparadas, jugadas y comentarios de su región; puede comentar mientras el partido está en juego. El administrador selecciona un partido programado y, en **Simulaciones**, inicia un recorrido de 90 minutos simulados en aproximadamente 90 segundos reales. El acceso al panel usa `X-Admin-Clave`.
 
-## Objetivo
+El frontend actual del TPO es HTML, CSS y JavaScript servido en `/demo/` por FastAPI. La vista React de `Hito-13-monitoreo/vista_hincha/react` pertenece al prototipo de los hitos: no se trasladó ni es la interfaz actual del TPO. El panel de monitoreo del Hito 13 también es independiente. IRIS no forma parte del TPO actual.
 
-Aplicación de prode con dos apartados:
+## Bases y responsabilidades actuales
 
-- **Usuario:** participar en un prode general y prodes de amigos; pronosticar partidos; consultar posiciones; ver un partido en curso con estado, jugadas, estadísticas y comentarios de su región.
-- **Administrador:** activar un partido y ejecutar una simulación que genere comentarios y actividad. A futuro se evaluará la carga; para la primera etapa interesa ejecutar y mostrar el recorrido.
+| Componente | Responsabilidad en el TPO |
+|---|---|
+| Neo4j | Fixture, equipos de cada partido, estado operativo, estadio, jugadores y relaciones entre jugadas. Tras el cierre conserva los eventos del guion, sus protagonistas y relaciones, más el resumen y muestras por minuto del partido archivado. Es la fuente de consulta de ese histórico archivado. |
+| MongoDB | Usuarios, catálogo de equipos y jugadores, prodes, pronósticos, resultados y ranking. `guiones_simulacion` conserva un guion por partido; `simulaciones` guarda la ficha, el guion copiado, minuto, marcador, estado de la simulación y estado del archivo. |
+| Cassandra | Comentarios por partido, país y ventana real de 30 minutos. La API FastAPI permite leer recientes y publicar durante un partido en juego. |
+| InfluxDB 3 Core | Muestras sintéticas por equipo y minuto: posesión, tiros, tiros al arco, pases acertados e intentados, faltas, córners y goles. El resumen calcula promedio de posesión y suma las acciones. |
+| Redis | Punto de extensión para sesiones y ranking; no implementado en el TPO actual. El TPO usa MongoDB para puntajes y ranking. |
+| Prometheus / Grafana | La API del TPO expone `/metrics`; el monitoreo completo de los hitos es independiente. No se debe asumir que el TPO ya levanta los paneles del Hito 13. |
 
-La parte asignada al usuario es la vista del partido minuto a minuto, especialmente **Cassandra para comentarios** e **InfluxDB para estadísticas y actividad temporal**. La integración de jugadas con Neo4j se coordinará después.
+Neo4j gobierna la transición operativa del partido. MongoDB mantiene una ficha de simulación con una copia del estado, minuto y marcador; no hay transacción distribuida entre bases. MongoDB conserva el resultado para puntuar, y el cierre actualiza el estado y marcador en Neo4j. Las transferencias o copias adicionales a MongoDB no suceden automáticamente.
 
-## Arquitectura acordada como dirección
+## Simulación y guion
 
-- **MongoDB:** base general para datos persistentes e historial. Propuesta reciente: guardar la ficha y estado general del partido, equipos, horario, sede, estado, minuto y marcador. Los datos de otras fuentes que se deban conservar también deberán trasladarse a MongoDB mediante servicios o procesos explícitos.
-- **Redis:** sesiones, ranking y cálculo de puntajes del prode. Los resultados y rankings que deban conservarse se trasladan a MongoDB.
-- **Cassandra:** escritura y lectura de comentarios en vivo por partido y región.
-- **InfluxDB:** evolución temporal de estadísticas deportivas, jugadas o movimientos, y actividad de la app como entradas, salidas y visualizaciones. Confirmar qué campos de eventos ya existen antes de implementarlos.
-- **Neo4j:** estructura del fixture y relaciones entre jugadores, partidos y jugadas; por ejemplo, una jugada que influye en otra. Si una jugada se representa en varias fuentes, acordar un ID común y responsabilidades con el compañero.
-- **Grafana:** visualización de métricas, según la infraestructura de monitoreo existente.
+1. El administrador elige un partido programado con ambos equipos definidos. Una reserva en MongoDB impide iniciar otra simulación del mismo partido.
+2. Se obtiene o crea un guion en `guiones_simulacion`: eventos con IDs estables, minuto, tipo, jugador, equipo y referencias a jugadas anteriores. Se resuelven los jugadores desde el catálogo de MongoDB. Se copia el guion a la ficha de la simulación.
+3. Se generan comentarios iniciales por región, se pone el partido en juego en Neo4j y se actualiza la ficha en MongoDB.
+4. Cada segundo real avanza un minuto simulado, se actualiza el marcador, se escribe una muestra de Influx por equipo y se generan comentarios de Argentina, Brasil, España y Uruguay. Las frases de gol coinciden con los goles del guion.
+5. El marcador se calcula a partir de los goles del guion. Al minuto 90 el servicio cierra el partido y ejecuta la puntuación del prode. En eliminatorias empatadas la demo elige al equipo local como clasificado; no simula penales.
+6. Después se consultan InfluxDB y el guion de MongoDB. Se exige una muestra por cada minuto 0–90 de ambos equipos, sin duplicados, y se comprueban los goles y las acciones del guion. Neo4j guarda los agregados, las muestras y las jugadas con `OCURRE_EN`, `PROTAGONIZA` e `INFLUYE_EN`. Los identificadores estables y `MERGE` permiten repetir el archivado sin duplicar.
 
-Las transferencias a MongoDB, su frecuencia, granularidad, reintentos e idempotencia son decisiones pendientes de implementación. Ninguna base copia datos automáticamente por estar en el diagrama. Definir la fuente de verdad de cada atributo para evitar estados contradictorios.
+La plantilla editable es `TPO/seed/guion_simulacion.json`: tipo, minuto, lado (`local` o `visitante`), dorsal y número opcional de la jugada anterior (`previa`). Con el entorno levantado y el fixture cargado, desde `TPO`:
 
-## Estado actual del partido
+```powershell
+.\scripts\cargar_guion.ps1 -Partido P-14
+```
 
-La propuesta conversada es que MongoDB mantenga el estado general: ID, equipos, sede, inicio, estado (`programado`, `en_juego`, `finalizado`), minuto y marcador. InfluxDB conservaría las observaciones a lo largo del tiempo. La pantalla consultaría la API para ambos.
+El comando prepara el guion en MongoDB y se puede repetir sin sobrescribirlo ni borrar datos. La simulación también lo crea automáticamente si aún no existe. Editar la plantilla solo afecta a guiones futuros. `seed.run --reiniciar` borra datos de laboratorio y no es necesario para esta carga.
 
-**Revisar primero el código actualizado:** versiones previas de la vista consultaban estado en IRIS; los cambios remotos posteriores redistribuyen responsabilidades. No crear una segunda fuente de verdad sin comprobar lo que ya se migró. MongoDB e InfluxDB no comparten automáticamente una transacción: registrar fallas y poder reintentar sin duplicar eventos.
+Los contadores sintéticos adicionales no identifican a un jugador por cada pase o tiro; no deben presentarse como eventos individuales. No hay MVP ni una fórmula implementada.
 
-## Simulador de partido: propuesto, pendiente
+## InfluxDB y estadísticas
 
-Se quiere un archivo o servicio que simule 90 minutos y genere muchos comentarios. Una propuesta para desarrollo es **90 minutos simulados en 90 segundos reales**, configurable; no quedó confirmada como requisito definitivo.
+Por minuto y equipo se registra una muestra con el minuto simulado y un instante real de escritura. La vista calcula: posesión promedio; tiros y tiros al arco; pases acertados y precisión (acertados / intentados); faltas y córners. Las acciones son incrementos por minuto. Los goles del guion se reflejan tanto en las muestras como en el marcador. `GET /partidos/{id}/estadisticas` lee Influx durante el vivo y Neo4j tras un archivado completo. Simulaciones antiguas que no contienen métricas nuevas muestran un guion en vez de inventar valores.
 
-Recorrido esperado:
+Si una escritura en Influx falla, la simulación puede seguir, pero marca estadísticas incompletas; aún no hay reintento ni reconstrucción automática de la muestra. No se archiva como completo un partido con datos incompletos. Si el traspaso al grafo falla, el partido puede finalizar y `archivo_estado` queda pendiente. Un administrador puede repetir `POST /administracion/simulaciones/{id}/archivar`. No hay recuperación automática ante reinicio del proceso ni detención manual de simulación.
 
-1. Desde el panel administrador elegir y activar un partido e iniciar la simulación.
-2. Publicar estado y minuto; generar jugadas y estadísticas para InfluxDB.
-3. Generar comentarios para varias regiones y escribirlos en Cassandra a una tasa configurable. Aumentar la actividad en eventos como goles es una posibilidad.
-4. Al minuto 90 detener la generación y marcar el partido como finalizado.
-5. Ofrecer detención manual, impedir dos simulaciones simultáneas del mismo partido y registrar interrupciones. Acordar qué ocurre al reiniciar.
+## Comentarios
 
-El panel del Hito 13 ya posee un botón de **pico de comentarios** que ejecuta el script `Hito-13-monitoreo/scripts/carga_comentarios.py`. Es una ráfaga y tiene verificación propia; **no equivale a un simulador de 90 minutos**, no avanza el reloj ni genera jugadas/estadísticas completas.
+- Cassandra particiona `comentarios_por_partido_pais` por `(partido_id, pais, ventana)` y ordena por fecha e ID. La ventana usa la hora real; no el minuto acelerado.
+- `GET /partidos/{id}/comentarios/recientes?pais=ARG` devuelve hasta 20 de la ventana actual y, si hace falta, de la anterior. `POST /partidos/{id}/comentarios` toma usuario y región desde la identificación de la solicitud; solo acepta publicaciones en un partido en juego.
+- La vista consulta cada 8 segundos, elimina duplicados por ID, mantiene una cola acotada y muestra un comentario cada 0,5 segundos, hasta 20 visibles. Con tráfico elevado muestra una selección reciente; no garantiza mostrar todos los almacenados. El comentario propio se coloca al principio de la cola.
+- El simulador usa nombres y mensajes sintéticos variados, con reacciones en los minutos de gol.
 
-Cassandra no necesita mantener un estado general de partido: guarda y consulta comentarios. La API o servicio del partido decide si se aceptan publicaciones. Para no romper las consultas actuales por ventana temporal, usar la hora real de inserción para las particiones de Cassandra y, si se necesita, registrar el minuto simulado como dato adicional.
+La identificación actual del TPO (`X-Usuario-Id`) solo verifica que el ID exista: es acceso de laboratorio, no autenticación real. La clave fija de administrador también es de demostración. El POST del TPO todavía no garantiza idempotencia ante un reintento. El Hito 10 implementa una tabla auxiliar de idempotencia, cuya adecuación al modelo fue observada por el profesor: acordar una solución antes de afirmar garantías.
 
-## Comentarios: decisión acordada
+## Histórico y API
 
-El simulador puede generar muchos comentarios, mientras la pantalla muestra una selección de la región del usuario:
+- `GET /en-vivo/partidos` y `GET /en-vivo/partidos/{id}`: fichas de simulación desde MongoDB.
+- `GET /partidos/{id}/estadisticas`: agregados desde InfluxDB durante el vivo y desde Neo4j cuando el archivo está completo.
+- `GET /partidos/{id}/historico`: resúmenes, muestras por minuto y jugadas archivadas en Neo4j.
+- `GET /partidos/{id}/eventos` y `GET /partidos/{id}/eventos/{evento_id}/cadena`: jugadas y relaciones del grafo.
+- `POST /administracion/simulaciones/{id}` inicia la simulación; `GET` sobre la misma ruta informa su avance. `POST .../{id}/archivar` reintenta el archivo. Requieren clave de administración.
+- La API expone su contrato completo en `/docs`.
 
-- Endpoint propuesto e implementado en Hito 10: `GET /partidos/{id}/comentarios/recientes?pais=ARG`. Devuelve hasta 20, más recientes primero.
-- Cassandra usa particiones por partido, país y ventana de 30 minutos. El servicio consulta la ventana actual y, si necesita completar los 20, la anterior.
-- La vista precarga hasta 20 cada **8 segundos**, encola y muestra **uno cada 0,5 segundos**, con un máximo de 20 visibles. Quita duplicados por ID y acota la cola. Si el tráfico es mayor que la capacidad de presentación, muestra una selección reciente, no todos los mensajes.
-- El usuario publica mediante el POST existente; la región y el usuario se toman de la sesión en el servidor de la vista. Los reintentos usan la misma clave de idempotencia.
-- El cursor del GET anterior sirve para paginar; no asumir que obtiene automáticamente solo mensajes nuevos.
+## Ejecución y recursos
 
-Pendientes: probar con Cassandra real y al cruzar media hora; revisar si el búfer y la estrategia de descarte son apropiados; actualizar OpenAPI versionado si el contrato lo requiere. Bajo muchos usuarios, considerar compartir consultas de un mismo partido y región en el servidor en vez de una lectura por usuario.
+Desde `TPO`, crear `.env` a partir de `.env.example`, configurar las tres claves y ejecutar `./scripts/levantar.ps1`; luego cargar el fixture con `docker compose run --rm herramientas python -m seed.run --dias-hasta-inicio 3`. Consultar `TPO/README.md` para requisitos y comandos. No publicar `.env` ni contraseñas.
 
-**Corrección histórica del profesor:** la API Hito 10 usa una tabla adicional `comentarios_idempotencia` que se señaló por apartarse de los modelos previos. El endpoint reciente no resuelve esa devolución. Acordar cómo manejar reintentos sin presentar como garantizada una solución aún no adoptada.
+Compose levanta MongoDB con tres nodos, Neo4j, Cassandra, InfluxDB y FastAPI. InfluxDB usa un volumen independiente, sin puerto publicado al host, con autenticación deshabilitada para este laboratorio y límite predeterminado de 0,5 CPU / 1 GB. No es configuración para un entorno compartido. Los límites de CPU y memoria son configurables. Para reducir el consumo conviene detener las pilas de hitos que no se necesiten; `docker compose stop` conserva los volúmenes. El inicio de varias bases puede exigir muchos recursos y los límites no garantizan una temperatura determinada.
 
-## Lo implementado en la última conversación
+## Evidencia y pendientes
 
-En el proyecto principal, commit `f750dc8`:
+- En pruebas locales se ejecutó una simulación real de 90 segundos, se guardaron y leyeron comentarios en Cassandra y se consultaron estadísticas en InfluxDB. Para P-13 se comprobó en Neo4j el histórico con 182 muestras, seis jugadas y la cadena Pase → Tiro → Gol; repetir el archivado conservó los mismos conteos.
+- Pasaron 183 pruebas unitarias en la última ejecución registrada. No se debe extrapolar estos resultados a carga de producción, alta concurrencia o fallas distribuidas.
+- Faltan pruebas de recuperación ante caídas, transición de ventana Cassandra y de integración en condiciones de carga; reintentos de escritura idempotentes; una estrategia para retomar simulaciones interrumpidas; autenticación y roles reales; políticas de retención e historial de comentarios; y observabilidad integrada de Cassandra e InfluxDB en el health del TPO.
+- Los procesos de transferencia adicionales hacia MongoDB, la integración definitiva con Redis y el monitoreo completo siguen pendientes. Deben acordarse fuentes de verdad y recuperación antes de implementarlos.
 
-- Endpoint y esquema de respuesta de comentarios recientes en `Hito-10-fixture2030-APIREST/app/routes/comentarios.py`, `app/services/comentarios.py` y `app/schemas/comentarios.py`.
-- Vista React sencilla en `Hito-13-monitoreo/vista_hincha/react/`, con sesión, selección de región, partidos en juego, comentarios, precarga y POST. Se sirve en `/react` desde el servidor de la vista. La vista anterior se conservó.
-- Instrucciones de compilación y ejecución en `Hito-13-monitoreo/vista_hincha/react/README.md`.
-- Se compiló React y se comprobó sintaxis Python. **No se ejecutó una prueba integrada con las bases ni una carga real.** En la instalación npm se informaron cuatro vulnerabilidades de severidad alta en dependencias de desarrollo; revisar su estado actual.
-- No se creó el simulador de 90 minutos ni se implementó un reloj o marcador de simulación. La pantalla React lo indica como pendiente.
-- La vista previa del Hito 13 también tenía SSE y consultas periódicas; revisar qué conviene reutilizar frente a la nueva vista React.
+## Antecedentes y preferencias
 
-En el proyecto principal se conservó el HTML que llegó del remoto y se guardó una versión local anterior como `arquitectura-hito-12-version-local.html`. El sitio de documentación usa su propio `index.html`; las copias pueden diferir.
-
-## Antecedentes del Hito 12
-
-La documentación vigente del Hito 12 reporta una medición de **50.000 INSERT directos a Cassandra** desde un cliente Python, no una prueba de la API completa. La comparación entre una base histórica y una variante de dos procesos es exploratoria: registra mejoras en throughput y p99 junto con una regresión en la latencia máxima. Para atribuir causalidad y repetibilidad faltan controles y repeticiones equivalentes.
-
-Existe una proyección Data Mart en SQLite con comentarios extraídos de Cassandra y conteos validados. El conjunto de demostración usa un partido sintético y un minuto; actualización periódica y recuperación ante fallas siguen propuestas. La comparación con PostgreSQL es conceptual. Consultar el README actual del Hito 12 antes de reutilizar estos resultados.
-
-## Preferencias de trabajo
-
-El usuario pide código **acotado, legible y simple**, con rutas y vistas claras. Prefiere evitar pruebas de carga o pruebas literales innecesarias mientras se implementa. No inventar resultados; distinguir siempre código existente, hipótesis y evidencia real. Prefiere documentación directa para un equipo técnico, sin texto decorativo. No hacer cambios adicionales ni ejecutar cargas destructivas solo por aparecer como propuestas en este documento.
+El Hito 12 midió 50.000 inserciones directas en Cassandra; esa medición no prueba la API del TPO. Su Data Mart en SQLite es una proyección de demostración con datos sintéticos. El usuario prefiere código simple y legible, bajo consumo de recursos, documentación directa y evitar pruebas de carga innecesarias; distinguir implementación, propuesta y evidencia.
