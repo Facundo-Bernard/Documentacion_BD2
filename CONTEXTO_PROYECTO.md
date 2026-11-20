@@ -1,34 +1,41 @@
-# Contexto del proyecto: Prode Fixture 2030
+# Arquitectura del Prode Fixture 2030
 
-Actualizado el 19/11/2026. Este documento describe el estado **local probado** del TPO en [Grupo16_BD2_repo](https://github.com/tomaszeppo/Grupo16_BD2_repo). Los cambios de simulación, comentarios y retención aquí descritos todavía no están publicados en ese repositorio; el código publicado puede diferir. Este repositorio contiene además la vista interactiva de arquitectura.
+Revisión del 20 de noviembre de 2026 sobre el [TPO publicado en `91cae0e`](https://github.com/tomaszeppo/Grupo16_BD2_repo/tree/91cae0e/TPO). La interfaz de usuario y la administración se sirven desde FastAPI en `/demo/`. Este sitio React documenta el sistema. Las consultas individuales de pronóstico y las columnas de pronóstico y puntos del partido en el modal de grupo pertenecen a una revisión local posterior.
 
-## Recorrido y responsabilidades
+## Del pronóstico al histórico
 
-El administrador selecciona un partido programado y lo inicia desde Simulaciones. Noventa minutos simulados transcurren en aproximadamente 90 segundos reales. La vista de usuario muestra marcador, estadísticas, jugadas y comentarios de su región; una persona puede comentar mientras el partido está en juego.
+| Momento | Qué ocurre | Dónde se consulta |
+|---|---|---|
+| Antes del partido | Cada usuario carga el marcador local y visitante por API. Puede corregirlo. El mismo pronóstico vale en todos sus prodes. | MongoDB guarda una fila por usuario y partido. Neo4j gobierna el fixture. |
+| Inicio | Administración reserva la simulación. El simulador obtiene el guion y los planteles de MongoDB, abre sesiones de hinchas y envía hasta ocho pronósticos de prueba argentinos por HTTP. El cambio a **En juego** registra el inicio real en Neo4j y dispara la preparación del ranking. | La lista `GET /en-vivo/partidos` sale de la ficha en MongoDB, que contiene partido, corrida, minuto y marcador. |
+| Minutos 0–90 | Un segundo real representa un minuto simulado. La API de muestras calcula el marcador contando los goles del guion hasta ese minuto y escribe jugadas y posesión en Influx. Los hinchas publican por el mismo endpoint que una persona. | Estadísticas y relato salen de Influx. El historial del chat sale de Cassandra. Redis distribuye las novedades por SSE. |
+| Resultado | La API valida el marcador, registra el resultado del prode en MongoDB y finaliza el partido en Neo4j. La puntuación se ejecuta en segundo plano. | Clasificación acumulada en Redis con la configuración de Compose. El partido puede estar finalizado mientras se puntúan los pronósticos. |
+| Archivo | El simulador pide el archivo por HTTP. La API contrasta Influx con el guion, persiste agregados y confirma el histórico en Neo4j. | Con archivo completo, estadísticas y jugadas se leen del grafo. Los comentarios siguen en Cassandra. |
 
-| Componente | Función |
-|---|---|
-| FastAPI | Expone los endpoints y coordina las bases. El simulador usa HTTP para iniciar y cerrar el partido, publicar comentarios, enviar muestras y solicitar el archivo. La preparación del guion, los planteles y los metadatos internos aún usa acceso a las bases desde el servidor. |
-| Neo4j | Fixture y estado operativo. Al completar el archivo conserva eventos, protagonistas y relaciones, resúmenes por equipo y jugador y agregados por minuto. La vista consulta allí las estadísticas y jugadas archivadas. |
-| MongoDB | Usuarios, prodes, pronósticos, resultado, ranking, guiones y ficha de simulación (estado, minuto, marcador y estado del archivo). El cierre actual no copia el relato completo a MongoDB. No hay transacción distribuida entre bases. |
-| InfluxDB 3 Core | Jugadas y muestras temporales crudas para el vivo. Al cerrar, se calculan resúmenes por equipo y jugador que se guardan en otra base Influx con retención separada. |
-| Cassandra | Comentarios por partido, país y ventana real de 30 minutos; permanece disponible el historial paginado después del cierre. |
-| Redis | Extensión prevista, no integrada en el TPO actual. |
+### Neo4j · autoridad deportiva
 
-La interfaz actual del TPO es HTML, CSS y JavaScript servido por FastAPI en `/demo/`. El prototipo React de los hitos y sus paneles de monitoreo son independientes.
+El fixture pasa de **Programado** a **En juego** y luego a **Finalizado**. Se requieren dos equipos definidos. En eliminatorias, administración puede asignar dos equipos existentes y distintos antes del inicio. La clasificación del torneo se carga a mano. La fase de grupos rechaza un clasificado. En eliminatorias gana quien marque más goles y, si empatan, el cierre exige elegir uno de los dos. La simulación elige al local en ese caso.
 
-## Simulación y cierre
+Una jugada manual exige partido en juego, protagonista de alguno de los equipos y antecedentes del mismo partido. Repetir el ID con los mismos datos recupera la jugada. Reutilizarlo con otros datos produce conflicto. Si el grafo ya registra goles, el cierre comprueba su concordancia con el marcador. El histórico vincula jugador y evento con `PROTAGONIZA`, evento y partido con `OCURRE_EN`, y antecedente y consecuencia con `INFLUYE_EN`. El análisis de una cadena recorre hasta diez saltos.
 
-1. MongoDB reserva la corrida y conserva el guion editable con ID, minuto, jugador, equipo, tipo y relaciones entre jugadas. Los planteles se resuelven contra el catálogo.
-2. El simulador crea cuatro usuarios sintéticos, uno por región, y pone el partido en juego mediante la API. Publica los comentarios usando el mismo endpoint que la persona. Una muestra por jugador y minuto y las jugadas correspondientes se envían mediante el endpoint administrativo de muestras.
-3. Cada segundo real representa un minuto. En ARG, BRA, ESP y URU se generan alternadamente tres y dos comentarios por segundo: 20 por región en cada intervalo de ocho segundos, aproximadamente 225 por región y 900 en total en una corrida completa. Las frases de gol se corresponden con el guion.
-4. Al minuto 90 se cierra el resultado por la API y se inicia la puntuación del prode. La demo elige el equipo local como clasificado para una eliminatoria empatada; no simula penales.
-5. El archivado valida las muestras de cada jugador de los minutos 0 a 90, las jugadas y los goles del guion contra el marcador. Agrega los datos de Influx y guarda resúmenes finales por equipo y jugador en Influx; Neo4j recibe resúmenes, agregados por minuto y eventos relacionados.
-6. Si se completa, `archivo_estado` pasa a `completo`. Si el archivo falla queda `pendiente` y un administrador puede reintentarlo con `POST /administracion/simulaciones/{id}/archivar`. Las claves estables permiten repetir el archivo sin duplicar los resúmenes. No hay recuperación automática completa ante reinicio.
+### MongoDB · pronóstico y resultado durable
 
-La plantilla `TPO/seed/guion_simulacion.json` permite editar tipos, minutos, lados, dorsales y referencias a jugadas anteriores. `TPO/scripts/cargar_guion.ps1 -Partido P-14` prepara un guion sin sobrescribir uno existente; el simulador también lo crea si no existe. No es necesario ejecutar `seed.run --reiniciar`, que borra datos.
+El replica set de tres nodos conserva usuarios y país, equipos y jugadores, integrantes e invitaciones de prodes privados (máximo 100), guiones, fichas de simulación y el resultado oficial para puntuar. Pronósticos y resultados requieren confirmación de mayoría. El identificador usuario–partido evita duplicados. La última edición fija la hora usada para puntuar.
 
-## InfluxDB: datos crudos, agregados y retención
+Cada proceso de FastAPI conserva el calendario durante 30 s por defecto. Poner el partido en juego invalida la copia de ese proceso. Con `PRONOSTICOS_HASTA_INICIO_REAL=true` (Compose), un partido programado puede seguir abierto pasada la hora prevista. Con `false` también rige el cierre por horario. Toda carga desde el instante real de inicio queda anulada al puntuar, incluso si otro proceso la aceptó durante esa ventana.
+
+`resultados` guarda marcador, clasificado, tiempos y avance de la puntuación. `pronosticos` conserva el puntaje individual de ese encuentro. `puntajes` suma partidos aplicados y `rankings_historicos` conserva los primeros 100 y el total de usuarios por cierre. La ficha de simulación guarda una copia del guion para validación. El detalle temporal se archiva por otro recorrido.
+
+### Redis · puntuación, sesiones y distribución del vivo
+
+1. **Preparar.** Con `REDIS_ENABLED=true` se reconstruye el ranking desde los acumulados de MongoDB si hace falta. Al iniciar el partido se copia en un hash, por lotes de 500 por defecto, el marcador pronosticado y la hora de cada participante. La preparación se repite al cierre para incluir ediciones tardías que deben anularse.
+2. **Puntuar.** El marcador exacto vale **3**, acertar ganador o empate vale **1** y cualquier otro resultado vale **0**. Por ejemplo, para un 1–1 final, predecir 2–2 suma un punto y predecir 1–2 suma cero. Un pleno suma toda la anticipación desde la última edición hasta el inicio programado, acotada entre 0 y 5 días. Acertar solo el signo suma la mitad en segundos enteros. Un error o anulación suma cero anticipación.
+3. **Ordenar.** Por participante, un script Lua actualiza el hash de acumulados, el sorted set `prode:ranking` y la marca del partido aplicado. Los reintentos evitan sumar dos veces. El orden es puntos, exactos y segundos de anticipación descendentes, luego ID de usuario ascendente. La tabla privada exige pertenecer al grupo y ordena los acumulados de sus integrantes al consultar. Un usuario con cero puntos en este partido puede conservar puntos de encuentros anteriores.
+4. **Persistir.** El ranking se actualiza progresivamente por lotes. Tras una espera configurable (15 s por defecto), el trabajo vuelca resultados y acumulados en MongoDB, guarda la foto y limpia las claves temporales del encuentro. MongoDB registra los pasos y la toma del trabajo. Las señales de vida durante la puntuación permiten distinguir trabajo activo de abandonado y reintentar cierres pendientes. Con el ranking Redis desactivado, MongoDB ejecuta puntuación, suma y foto.
+
+Redis también guarda sesiones renovables de 24 h por defecto. `POST /sesiones` entrega token y cookie HttpOnly. Los clientes de API pueden enviar `X-Sesion`. Elegir un usuario es suficiente en este laboratorio. Las operaciones administrativas requieren además `X-Admin-Clave`. Pub/Sub distribuye estado y chat. La conexión SSE renueva presencia cada 5 s y una conexión sin señal deja de contar tras 15 s. HyperLogLog estima usuarios únicos por país. El primario usa AOF y una réplica asíncrona sirve para medir el atraso. La API opera contra el primario. La pérdida de Redis afecta las sesiones aun con el ranking configurado en MongoDB.
+
+## InfluxDB · vivo, análisis y retención
 
 Las simulaciones nuevas usan dos bases separadas:
 
@@ -43,19 +50,24 @@ La base anterior `fixture2030_metrics` no se modifica ni migra automáticamente.
 
 `INFLUX_RAW_DB`, `INFLUX_RESUMEN_DB` e `INFLUX_RAW_RETENCION` configuran nombres y duración al crear las bases. Cambiar la variable de retención no altera una base ya creada. Los datos crudos se identifican también por `corrida_id`; el ID de evento se guarda como campo. La posesión se obtiene de segundos por jugador y las acciones se agregan por jugador, equipo y minuto. Un gol cuenta como tiro y tiro al arco; córners permanecen en cero mientras no se generen. Son datos sintéticos.
 
-## Comentarios y consultas
+La base de resúmenes también conserva `audiencia_partido`, `comentarios_partido` y `audiencia_resumen`. Al cerrar cada minuto se toman presencia y contadores de Redis. Al cierre del partido se guardan los espectadores únicos estimados. Los endpoints de análisis permiten consultar por país y tramo y comparar corridas de demo o carga. Las consultas por partido acotan el tiempo para limitar los archivos que abre InfluxDB. El promedio entre partidos tiene un costo creciente.
 
-Cassandra particiona por `(partido_id, pais, ventana)` y ordena por fecha e ID. `POST /partidos/{id}/comentarios` usa la identificación de usuario y su país; requiere partido en juego. `GET /partidos/{id}/comentarios/recientes?pais=ARG` devuelve hasta 20 recientes. La pantalla consulta cada 8 segundos, muestra uno cada 0,5 segundos y limita la cola: puede omitir algunos comentarios en el vivo aunque permanezcan guardados. Veinte cada ocho segundos exceden los 16 que se pueden mostrar en ese intervalo.
+Para archivar se exigen muestras del plantel para cada minuto 0–90, eventos coincidentes con el guion y goles coherentes con el resultado. El grafo recibe eventos, resúmenes de jugador y equipo y agregados de equipo por minuto. Si falla, `archivo_estado` queda pendiente. Administración puede repetir `POST /administracion/simulaciones/{id}/archivar` mientras exista el detalle íntegro. La puntuación y el archivo deportivo son trabajos independientes. Una corrida interrumpida durante el juego carece de reanudación automática completa.
 
-Para un partido finalizado, `GET /partidos/{id}/comentarios/historial?pais=ARG` devuelve páginas de hasta 20 y `next_cursor` para recorrer ventanas anteriores. Los comentarios no tienen vencimiento automático configurado. El POST no garantiza idempotencia. La identificación `X-Usuario-Id` y la clave `X-Admin-Clave` son de laboratorio, no un sistema seguro de autenticación y roles.
+## Cassandra · comentario, entrega e historial
 
-Otras rutas: `GET /en-vivo/partidos`, `GET /partidos/{id}/estadisticas`, `/estadisticas/jugadores`, `/jugadas/temporales` y `/historico`. En vivo las estadísticas y jugadas usan Influx; con archivo completo usan Neo4j. `POST /administracion/simulaciones/{id}/muestras` recibe los minutos de la simulación y exige clave administrativa. El contrato completo está en `/docs`.
+El país se obtiene del usuario de MongoDB. El POST exige sesión, partido en juego, UUID del cliente y texto de 1 a 280 caracteres. Redis reserva el UUID durante 10 min y aplica modo lento por usuario (5 s por defecto). Un envío nuevo devuelve 201, una repetición ya completada devuelve 200 y uno simultáneo o demasiado rápido devuelve 429. Cassandra conserva el texto antes de distribuirlo por Redis a la tribuna del país y al canal global. Son escrituras separadas.
 
-## Evidencia y límites
+La clave de partición es `(partido_id, pais, ventana)` con ventanas UTC reales de media hora. Fecha e ID ordenan filas. Los dos datacenters del laboratorio, América y Europa, usan consistencia `LOCAL_ONE` y el adaptador intenta la otra región ante fallas regionales. El historial global descubre países en Cassandra y contempla partidos antiguos sin índice de países.
 
-- Se probó una simulación nueva completa P-17: 90 minutos simulados, archivo completo, 2 resúmenes de equipo y 22 de jugador en la base permanente, y 31 jugadas consultadas desde Neo4j. Repetir el archivo mantuvo 22 resúmenes de jugador.
-- Se verificó en los metadatos de Influx que la base cruda nueva tiene retención de siete días y la de resúmenes no tiene vencimiento. El vencimiento físico tras siete días no fue comprobado por espera real.
-- Pasaron 196 pruebas unitarias en la última ejecución. Los datos de carga históricos y el Hito 12 no prueban que la aplicación soporte concurrencia de producción. El simulador genera tráfico por API, pero no equivale a una carga de espectadores simultáneos.
-- Pendientes: recuperación de simulaciones interrumpidas, recuperación antes del vencimiento ante fallas prolongadas, idempotencia de comentarios, autenticación real y pruebas de carga y fallas distribuidas. La base de laboratorio no sustituye una estrategia de respaldos.
+La pantalla carga historial y recibe novedades por `GET /partidos/{id}/vivo` (SSE). Para recuperar una página se usa `GET /partidos/{id}/comentarios?pais=ARG&limit=20` o `alcance=todos`. El campo `siguiente` se envía como `antes_de`. La consulta explora hasta seis ventanas y extiende la página si varios comentarios empatan en el instante de corte. En partidos terminados empieza desde el cierre. Los textos se conservan sin TTL. También existe la consulta de recientes por país.
 
-Compose levanta MongoDB con tres nodos, Neo4j, Cassandra, InfluxDB y FastAPI; el consumo y la temperatura dependen del equipo. Consultar `TPO/README.md` para la configuración, evitando publicar contraseñas o `.env`.
+La simulación prepara 25 hinchas por país y rota sus sesiones. Con los cuatro países base y la tasa predeterminada de 4 envíos por país y segundo durante 90 intervalos, **intenta 1.440 comentarios**, más los de países adicionales presentes al inicio. El total aceptado depende de las respuestas de la API. Los 91 lotes de muestras incluyen el minuto cero y el 90. El guion se puede preparar con `TPO/scripts/cargar_guion.ps1 -Partido P-14` y editar a partir de `TPO/seed/guion_simulacion.json`.
+
+## Operación y evidencia
+
+Compose reúne FastAPI, los cinco motores, inicialización de esquemas, Prometheus, exportadores y Grafana. Las dos regiones comparten una máquina. No hay transacción distribuida entre motores. Conviene distinguir el indicador de simulación completa, el de estadísticas archivadas y el de puntuación completa al interpretar una prueba.
+
+En la medición publicada con 100.000 pronósticos, la tabla Redis se completó en 10,4 s y la persistencia y el cierre completos tardaron 127,7 s. Con MongoDB como motor de ranking, el cierre completo tardó 42,3 s. Las cifras corresponden al laboratorio; la precarga directa de usuarios, sesiones y pronósticos se excluyó de la medición. Repetir el cierre mantuvo los acumulados. [Mediciones y condiciones](https://github.com/tomaszeppo/Grupo16_BD2_repo/blob/91cae0e/TPO/docs/rendimiento.md).
+
+El detalle de claves, índices y relaciones, las decisiones de consistencia y las rutas públicas se pueden contrastar con la misma revisión. [Modelo de datos](https://github.com/tomaszeppo/Grupo16_BD2_repo/blob/91cae0e/TPO/docs/modelo_de_datos.md) · [Decisiones por motor](https://github.com/tomaszeppo/Grupo16_BD2_repo/blob/91cae0e/TPO/docs/decisiones.md) · [API](https://github.com/tomaszeppo/Grupo16_BD2_repo/blob/91cae0e/TPO/docs/api.md).

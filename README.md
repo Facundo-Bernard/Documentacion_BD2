@@ -6,4 +6,4 @@ Sitio React para explorar arquitectura, flujo de simulación, comentarios, estad
 
 Requiere Node.js 20.19+ o 22.12+. Ejecutar `npm ci` y `npm run dev`. Para generar el sitio estático: `npm run build`; Vercel detecta Vite y publica `dist`.
 
-La información marcada como cambios locales describe el trabajo por jugador aún no publicado en el repositorio principal. Consultar [CONTEXTO_PROYECTO.md](CONTEXTO_PROYECTO.md) para el estado publicado anterior y [TPO](https://github.com/tomaszeppo/Grupo16_BD2_repo/tree/main/TPO) para la fuente vigente.
+El [contexto del proyecto](CONTEXTO_PROYECTO.md) documenta el recorrido de una simulación, las reglas de cada motor y las mediciones del laboratorio sobre la [revisión 91cae0e del TPO](https://github.com/tomaszeppo/Grupo16_BD2_repo/tree/91cae0e/TPO).
